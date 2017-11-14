@@ -1,0 +1,119 @@
+---
+title: "Jobs vs housing"
+author: "Vignette Author"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{jobs-vs-housing}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r knitrOpts}
+
+```
+
+```{r loadPackages}
+library(data.table)
+library(hutils)
+library(magrittr)
+library(ASGS)
+library(sp)
+library(rgeos)
+library(ggplot2)
+```
+
+```{r workers_by_SLA2006_Home_Dest}
+workers_by_SLA2006_Home_Dest <-
+  fread("~/ABS-data/inbox/SLA-v-JTW-SLA-2006-clean.csv", header = FALSE, na.strings = "") %>%
+  setnames(1:3, c("SLA_2006_Home", "SLA_2006_Work", "workers")) %>%
+  drop_empty_cols %>%
+  .[, SLA_2006_Home := zoo::na.locf(SLA_2006_Home, na.rm = FALSE)] %>%
+  .[SLA_2006_Home != "Total"] %>%
+  .[SLA_2006_Work != "Total"] %>%
+  .[workers > 0]
+```
+
+```{r workers_by_SLA2006}
+workers_by_SLA2006 <-
+  workers_by_SLA2006_Home_Dest[, .(workers = sum(workers)), keyby = "SLA_2006_Work"]
+```
+
+```{r workersInnerSydney2006}
+
+```
+
+```{r}
+SydneyMelJobGrowth <-
+  read.table(text = " 	Sydney	Sydney 2	Blank	Melbourne	Melbourne 2
+Inner 01	-2500	54500		23500	68000
+Middle 01	13000	20000		26000	24500
+Outer 01	35500	31000		56500	50000",
+sep = "\t", header = TRUE, as.is = TRUE) %>%
+  as.data.table %>%
+  drop_empty_cols %>%
+  setnames(c("Sydney", "Sydney.2"),
+           c("Sydney_0106", "Sydney_0611")) %>%
+  setnames(c("Melbourne", "Melbourne.2"),
+           c("Melbourne_0106", "Melbourne_0611")) %>%
+  setnames(1, "Ring") %>%
+  melt.data.table(id.vars = "Ring", value.name = "delta_workers") %>%
+  merge(data.table(Ring = c("Inner 01",
+                            "Middle 01",
+                            "Outer 01"),
+                   distance_group = cut(c(1, 5, 25),
+                                       breaks = c(-Inf, 2, 15, Inf), 
+                                       labels = c("0-2km", "2-15km", ">15km"),
+                                       ordered = TRUE)), 
+        by = "Ring") %>%
+  .[, City := "SYD"] %>%
+  .[, Period := if_else(grepl("0611", variable), "2006-2011", "2001-2006")] %>%
+  .[variable %pin% "Melbourne", City := "MEL"] %>%
+  .[]
+```
+
+```{r workers_by_km_group_distance}
+workers_by_km_group_distance <- 
+  workers_by_GPO[distance2GPO < 35,
+                 distance_group := cut(distance2GPO,
+                                       breaks = c(-Inf, 2, 15, Inf), 
+                                       labels = c("0-2km", "2-15km", ">15km"),
+                                       ordered = TRUE)] %>%
+  .[, .(total_workers = sum(persons)), keyby = c("Year", "City", "distance_group")] 
+  
+workers_by_km_group_distance %>%
+  .[, .(delta_workers = last(total_workers) - first(total_workers)), keyby = c("City", "distance_group")] %>%
+  .[, Period := "2011-2016"] %>%
+  .[] %>%
+  .[City %in% c("SYD", "MEL")] %>%
+  rbind(SydneyMelJobGrowth, fill = TRUE, use.names = TRUE) %>%
+  .[order(-Period)] %>%
+  .[City %in% c("SYD", "MEL")] %>%
+  .[order(City, distance_group, Period)] %>%
+  grplot(aes(x = Period, y = delta_workers)) + 
+  geom_bar(stat = "identity") +
+  facet_grid(City ~ distance_group)
+```
+
+```{r}
+workers_by_GPO %>% 
+  .[distance2GPO < 2] %>% 
+  .[City == "SYD"] %>% 
+  .[DZN_2011_centroids_tidy, on = "DZN_CODE11", nomatch=0L] %>%
+  ggplot(aes(lon, lat, size = persons)) +
+  geom_point() +
+  annotate_coastline("Sydney") +
+  coord_map(xlim = c(151.19, 151.23), ylim = c(-33.89, -33.85)) +
+  facet_wrap(~Year)
+```
+
+
+
+
