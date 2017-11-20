@@ -12,15 +12,19 @@ vignette: >
 ```{r setup, include = FALSE}
 knitr::opts_chunk$set(
   collapse = TRUE,
+  fig.width = 12, 
+  fig.height = 10,
+  cache = TRUE,
   comment = "#>"
 )
 ```
 
-```{r knitrOpts}
-
-```
-
 ```{r loadPackages}
+library(viridis)
+library(leaflet)
+library(scales)
+library(grattanCharts)
+library(Census2016.DataPack)
 library(data.table)
 library(hutils)
 library(magrittr)
@@ -28,7 +32,102 @@ library(ASGS)
 library(sp)
 library(rgeos)
 library(ggplot2)
+library(journey.to.work1116)
 ```
+
+```{r temp}
+SA2_DZN_2011 <- fread("~/ABS-Data/2011-Home_SA2-Work_DZN-Count.csv")
+
+DZN_2011_persons <-
+  SA2_DZN_2011[, .(persons = sum(Count)), keyby = .(DZN_CODE11 = Work_DZN)]
+
+DZN_2011_data <-
+  as.data.table(DZN_2011@data) %>%
+  .[, id := .I]
+
+DZN_2011_centroids <- gCentroid(DZN_2011, byid = TRUE)
+DZN_2011_centroids_tidy <-
+  as.data.frame(DZN_2011_centroids) %>%
+  as.data.table %>%
+  .[, id := .I] %>%
+  .[DZN_2011_data, on = "id"] %>%
+  setnames(c("x", "y"), c("lon", "lat")) %>%
+  .[]
+
+DZN_2016_persons <-
+  fread("../data-raw/2016-DZN-persons.csv", skip = 10) %>%
+  setnames(1:2, c("DZN_CODE16", "persons")) %>%
+  drop_empty_cols %>%
+  .[DZN_CODE16 %enotin% c("Total",
+                          "POW not applicable",
+                          "POW No Fixed Address (OT)",
+                          "Migratory - Offshore - Shipping (OT)")]
+
+DZN_2016_data <-
+  as.data.table(DZN_2016@data) %>%
+  .[, id := .I]
+
+DZN_2016_centroids <- gCentroid(DZN_2016, byid = TRUE)
+DZN_2016_centroids_tidy <-
+  as.data.frame(DZN_2016_centroids) %>%
+  as.data.table %>%
+  .[, id := .I] %>%
+  .[DZN_2016_data, on = "id"] %>%
+  setnames(c("x", "y"), c("lon", "lat")) %>%
+  .[]
+
+library(PSMA)
+SYD <- geocode(number_first = 1, street_name = "Martin", street_type = "Place", postcode = 2000)
+MEL <- geocode(number_first = 350, street_name = "Bourke", street_type = "Street", postcode = 3000)
+BNE <- geocode(number_first = 261, street_name = "Queen", street_type = "Street", postcode = 4000)
+ADL <- geocode(number_first = 141, street_name = "King William", street_type = "Street", postcode = 5000)
+PER <- geocode(number_first = 378, street_name = "Wellington", street_type = "Street", postcode = 6000)
+
+lat_lon_by_City <-
+  data.table(City = c("SYD", "MEL", "BNE", "ADL", "PER"),
+             GPO_lat = c(SYD$LATITUDE, MEL$LATITUDE, BNE$LATITUDE, ADL$LATITUDE, PER$LATITUDE),
+             GPO_lon = c(SYD$LONGITUDE, MEL$LONGITUDE, BNE$LONGITUDE, ADL$LONGITUDE, PER$LONGITUDE))
+
+id_by_city <-
+  data.table::CJ(id = DZN_2011_centroids_tidy$id,
+                 City = c("SYD", "MEL", "BNE", "ADL", "PER")) %>%
+  .[lat_lon_by_City, on = "City"]
+
+distance2GPO_by_DZN_CODE11 <-
+  DZN_2011_centroids_tidy %>%
+  .[id_by_city, on = "id"] %>%
+  .[, distance2GPO := haversine_distance(lat, lon, GPO_lat, GPO_lon)] %>%
+  .[, .(distance2GPO = min(distance2GPO),
+        City = City[which.min(distance2GPO)]), keyby = c("DZN_CODE11")]
+
+distance2GPO_by_DZN_CODE16 <-
+  DZN_2016_centroids_tidy %>%
+  .[id_by_city, on = "id"] %>%
+  .[, distance2GPO := haversine_distance(lat, lon, GPO_lat, GPO_lon)] %>%
+  .[, .(distance2GPO = min(distance2GPO),
+        City = City[which.min(distance2GPO)]), keyby = c("DZN_CODE16")]
+
+persons_by_GPO_distance_2011 <-
+  distance2GPO_by_DZN_CODE11[DZN_2011_persons, on = "DZN_CODE11", nomatch=0L] %>%
+  .[, Year := "2011"]
+
+persons_by_GPO_distance_2016 <-
+  distance2GPO_by_DZN_CODE16[DZN_2016_persons, on = "DZN_CODE16", nomatch=0L] %>%
+  .[, Year := "2016"]
+
+workers_by_GPO <-
+  rbind(persons_by_GPO_distance_2011,
+        persons_by_GPO_distance_2016,
+        use.names = TRUE, fill = TRUE)
+
+correspondence <-
+  readxl::read_excel("../data-raw/cg_dzn_2011_dzn_2016.xls",
+                     sheet = "Table 3",
+                     range = "A6:D9562") %>%
+  as.data.table %>%
+  .[complete.cases(.)]
+```
+
 
 ```{r workers_by_SLA2006_Home_Dest}
 workers_by_SLA2006_Home_Dest <-
@@ -113,6 +212,475 @@ workers_by_GPO %>%
   coord_map(xlim = c(151.19, 151.23), ylim = c(-33.89, -33.85)) +
   facet_wrap(~Year)
 ```
+
+
+## Where have jobs grown (2011-2016)?
+
+
+### Absolute change 
+
+```{r n_employed_persons_2016_SYD_CBD}
+n_employed_persons_2016_SYD_CBD <-
+  JTW_2016_SA2 %>%
+  .[D_SA2_NAME16 %ein% "Sydney - Haymarket - The Rocks"] %$%
+  sum(workers) %>%
+  round(-3)
+```
+
+```{r n_employed_persons_2011_SYD_CBD}
+n_employed_persons_2011_SYD_CBD <-
+  JTW_2011_SA2 %>%
+  .[D_SA2_NAME11 %ein% "Sydney - Haymarket - The Rocks"] %$%
+  sum(workers) %>%
+  round(-1)
+```
+
+
+```{r n_employed_persons_2006_SYD_CBD}
+n_employed_persons_2006_SYD_CBD <-
+  JTW_2006_SLA %>%
+  .[D_SLA_NAME06 %ein% "Sydney (C) - Inner"] %$%
+  sum(workers)
+```
+
+```{r n_employed_persons_2001_SYD_CBD}
+n_employed_persons_2001_SYD_CBD <- 186798
+```
+
+```{r n_employed_persons_1996_SYD_CBD}
+n_employed_persons_1996_SYD_CBD <- 162609
+```
+
+```{r n_employed_persons_1991_SYD_CBD}
+n_employed_persons_1991_SYD_CBD <-
+  JTW_1991_SYD[Work_SLA %ein% "Sydney (Inner)"] %$% 
+  sum(workers) %>%
+  round(-3)
+```
+
+
+```{r ERP_by_ASGS_1991_2016}
+ERP_by_ASGS_1991_2016 <-
+  if (!file.exists("~/ABS-data/Estimated-Resident-Population-by-SA2-and-above-1991-2016.csv")) {
+    fread("https://github.com/HughParsonage/ABS-data/raw/82c5be16745077b8c5049ae2c098c695f1e5ee5c/Estimated-Resident-Population-by-SA2-and-above-1991-2016.csv")
+  } else {
+    fread("~/ABS-data/Estimated-Resident-Population-by-SA2-and-above-1991-2016.csv")
+  }
+```
+
+```{r AREA_by_SA2_2011}
+AREA_by_SA2_2011 <-
+  SA2_2011@data %>%
+  as.data.table %>%
+  .[, .(SA2_NAME11, ALBERS_SQKM = ALBERS_SQM / 1e6)]
+```
+
+
+```{r percent0}
+percent0 <- function(x, d = 1) {
+  paste0(formatC(100*x, digits = d, flag = " ", format = "f"), "%")
+}
+```
+
+```{r delta_residents1116_density}
+delta_residents1116_density <-
+  ERP_by_ASGS_1991_2016 %>%
+  .[REGIONTYPE == "SA2"] %>%
+  .[Year %in% c(2011, 2016),
+    .(Year, Region = NAME_2011, ERP = EstimatedResidentPopulation)] %>%
+  dcast.data.table(Region ~ Year, value.var = "ERP") %>%
+  .[`2011` > 0, .(SA2_NAME11 = Region,
+                  `2011`,
+                  `2016`,
+                  delta_residents = (`2016` / `2011`) ^ (1/4) - 1)] %>%
+  .[, breaks := .bincode(delta_residents,
+                         breaks = quantile(delta_residents, probs = c(0:8)/8),
+                         # breaks = c(-Inf, 200 * (0:6), Inf),
+                         include.lowest = TRUE)] %>%
+  .[, fillColor := c("white", gpal(7, reverse = TRUE))[breaks]] %>%
+  .[, labelText := percent0(delta_residents)] %>%
+  .[, labelTitle := SA2_NAME11] %>%
+  .[]
+```
+
+```{r delta_residents1116}
+delta_residents1116 <-
+  ERP_by_ASGS_1991_2016 %>%
+  .[REGIONTYPE == "SA2"] %>%
+  .[Year %in% c(2011, 2016),
+    .(Year, Region = NAME_2011, ERP = EstimatedResidentPopulation)] %>%
+  dcast.data.table(Region ~ Year, value.var = "ERP") %>%
+  .[`2011` > 0, .(SA2_NAME11 = Region,
+                  `2011`,
+                  `2016`,
+                  delta_residents = (`2016` - `2011`))] %>%
+  .[, p90 := quantile(delta_residents, probs = 0.9, na.rm = TRUE)] %>%
+  
+  .[delta_residents <= 0, fillColor := "white"] %>%
+  .[delta_residents >= p90[1], fillColor := "black"] %>%
+  .[is.na(fillColor),
+    fillColor := gpal(6, reverse = TRUE)[.bincode(delta_residents,
+                                                  breaks = ((0:5)/5) * p90[1], 
+                                                  include.lowest = TRUE)]] %>%
+  # .[complete.cases(.)] %>%
+  .[, labelTitle := SA2_NAME11] %>%
+  .[, labelText := scales::comma(delta_residents)] %>%
+  .[]
+```
+
+```{r delta_residents_density}
+delta_residents_density <-
+  ERP_by_ASGS_1991_2016 %>%
+  .[REGIONTYPE == "SA2"] %>%
+  .[Year %in% c(2011, 2016), 
+    .(Year, Region = NAME_2011, ERP = EstimatedResidentPopulation)] %>%
+  .[AREA_by_SA2_2011, on = "Region==SA2_NAME11"] %>%
+  .[, density := ERP / ALBERS_SQKM] %>%
+  dcast.data.table(Region ~ Year, value.var = "density") %>%
+  .[`2011` > 0, .(SA2_NAME11 = Region,
+                  `2011`,
+                  `2016`,
+                  delta_residents = (`2016` / `2011`)^(1/4) - 1)] %>%
+  .[, breaks := .bincode(delta_residents,
+                         breaks = quantile(delta_residents, probs = c(0:8)/8),
+                         # breaks = c(-Inf, 200 * (0:6), Inf),
+                         include.lowest = TRUE)] %>%
+  .[, fillColor := c("white", gpal(7, reverse = TRUE))[breaks]] %>%
+  .[, labelText := paste0(if_else(delta_residents > 0, "+", ""),
+                         percent(delta_residents), "<br>",
+                         comma(floor(`2011`)), " --> ", comma(floor(`2016`)))] %>%
+  .[, labelTitle := paste(SA2_NAME11, " density")] %>%
+  .[]
+```
+
+```{r workers_by_SA2_Year}
+workers_by_SA2_Year <-
+  # Use 2011 boundaries
+  rbindlist(list("2016" = JTW_2016_SA2[, .(workers = sum(workers)), keyby = .(SA2_NAME11 = D_SA2_NAME16)],
+                 "2011" = JTW_2011_SA2[, .(workers = sum(workers)), keyby = .(SA2_NAME11 = D_SA2_NAME11)]),
+            idcol = "Year") %>%
+  dcast.data.table(SA2_NAME11 ~ Year, value.var = "workers")
+```
+
+```{r workers_by_Sydney_SA3_Year}
+workers_by_Sydney_SA3_Year <- 
+  data.table(Year = c(1991, 2016),
+             workers = c(359795, 494315)) %>%
+  .[, AREA := 25.0641]
+```
+
+```{r delta_workers1116}
+delta_workers1116 <- workers_by_SA2_Year[, .(SA2_NAME11, delta_workers = `2016` - `2011`)]
+```
+
+```{r delta_residents_vs_workers}
+delta_residents_vs_workers <-
+  delta_workers1116[delta_residents1116, on = "SA2_NAME11", nomatch=0L]
+```
+
+```{r delta_workers_0616_abs}
+delta_workers_0616_abs <-
+  JTW_2006_SLA
+```
+
+
+```{r SA2_2016_residents}
+SA2__persons <- 
+  SA2__Persons %>%
+  SA2016_decoder[., on = "SA2_MAIN16==SA2_MAINCODE_2016"] %>%
+  set_cols_first("SA2_NAME16") %>%
+  .[, fillColor := gpal(7, reverse = TRUE)[dplyr::ntile(persons, 7)]] %>%
+  .[, labelTitle := SA2_NAME16] %>%
+  .[, labelText := scales::comma(persons)]
+```
+
+```{r n_workers_by_Year_SYD_CBD}
+n_workers_by_Year_SYD_CBD <-
+  data.table(Year = seq(from = 1991, to = 2016, by = 5), 
+             workers = as.numeric(unlist(mget(x = paste0("n_employed_persons_", seq(1991, 2016, by = 5), "_SYD_CBD")))))
+```
+
+```{r SA3_2011_centroids}
+SA3_2011_centroids <- 
+  cbind(SA3_2011@data, gCentroid(SA3_2011, byid = TRUE)@coords) %>%
+  as.data.table
+```
+
+```{r SA3NAME_vs_dist2SYDGPO}
+SA3NAME_vs_dist2SYDGPO <-
+  SA3_2011_centroids %>%
+  .[, dist2SYDGPO := haversine_distance(y, x, SYD$LATITUDE, SYD$LONGITUDE)] %>%
+  .[]
+```
+
+```{r SA2NAME_vs_dist2SYDGPO}
+SA2NAME_vs_dist2SYDGPO <-
+  SA2_2011_weighted_centroids %>%
+  .[, SA2_NAME11 := latlon2SA(lat, lon, to = "SA2", yr = "2011", return = "v")] %>%
+  .[, dist2SYDGPO := haversine_distance(lat, lon, SYD$LATITUDE, SYD$LONGITUDE)] %>%
+  .[]
+```
+
+
+```{r pop-inner-ring-vs-CBD-employment}
+ERP_by_ASGS_1991_2016 %>%
+  .[REGIONTYPE == "SA3"] %>%
+  .[NAME_2011 %in% SA3NAME_vs_dist2SYDGPO[dist2SYDGPO < 10][["SA3_NAME11"]]] %>%
+  ggplot(aes(x = Year, y = EstimatedResidentPopulation, group = NAME_2011, color = NAME_2011)) + 
+  geom_line()
+```
+
+```{r SydneyInnerCitySA3_minus_CBD_by_Year}
+SydneyInnerCitySA3_minus_CBD_by_Year <-
+  ERP_by_ASGS_1991_2016 %>%
+  .[NAME_2011 %ein% c("Sydney Inner City", "Sydney - Haymarket - The Rocks")] %>%
+  .[, .(NAME_2011, Year, EstimatedResidentPopulation)] %>%
+  dcast.data.table(Year ~ NAME_2011, value.var = "EstimatedResidentPopulation") %>%
+  .[, `Sydney Inner City minus CBD` := `Sydney Inner City` - `Sydney - Haymarket - The Rocks`] %>%
+  .[, .(Year, `Sydney - Haymarket - The Rocks`, `Sydney Inner City minus CBD`)] %>%
+  melt.data.table(id.vars = "Year",
+                  variable.name = "NAME_2011",
+                  variable.factor = FALSE,
+                  value.name = "EstimatedResidentPopulation")
+```
+
+```{r pop-inner-ring-vs-CBD-employment-CBD-split-out}
+ERP_by_ASGS_1991_2016 %>%
+  .[REGIONTYPE == "SA3"] %>%
+  .[NAME_2011 %in% SA3NAME_vs_dist2SYDGPO[dist2SYDGPO < 10][["SA3_NAME11"]]] %>%
+  # .[NAME_2011 %enotin% "Sydney Inner City"] %>%
+  # rbind(SydneyInnerCitySA3_minus_CBD_by_Year, use.names = TRUE, fill = TRUE) %>%
+  # .[NAME_2011 %enotin% c("Sydney - Haymarket - The Rocks")] %>%
+  .[, Index := EstimatedResidentPopulation / first(EstimatedResidentPopulation),
+    keyby = "NAME_2011"] %>%
+  .[, last_pop := last(Index), keyby = "NAME_2011"] %>%
+  .[, SA3 := reorder(NAME_2011, -last_pop)] %>%
+  ggplot(aes(x = Year, y = Index, group = SA3, color = SA3)) + 
+  geom_line() + 
+  scale_y_continuous(labels = function(x) 100 * x,
+                     breaks = c(1, 1.5, 2, 2.5))
+```
+
+
+```{r pop_index-vs-Year-SA2-by-distance--Sydney}
+# ERP_by_ASGS_1991_2016
+```
+
+```{r slope}
+slope <- function(x, y) {
+  x <- as.double(x)
+  y <- as.double(y)
+  n <- length(x)
+  {sum(x * y) - sum(x) * sum(y) / n} /
+    {sum(x^2) - sum(x)^2 / n}
+}
+```
+
+```{r SA2011_decoder}
+SA2011_decoder <- as.data.table(SA2_2011)
+```
+
+```{r growth_by_SA2}
+ERP_by_ASGS_1991_2016 %>%
+  .[NAME_2011 %ein% SA2011_decoder[GCC_NAME11 == "Greater Sydney"][["SA2_NAME11"]]] %>%
+  .[SA2_2011_weighted_centroids, on = "CODE_2011==SA2_MAIN11", nomatch=0L] %>%
+  .[, distance2GPO := haversine_distance(lat, lon, SYD$LATITUDE, SYD$LONGITUDE)] %>%
+  .[] %>%
+  .[, distance_group := cut(distance2GPO, breaks = c(-Inf, 2, 10, 20, Inf), 
+                            labels = c("<2km", "2-10km", "10-20km", "20km+"),
+                            include.lowest = TRUE,
+                            ordered_result = TRUE)] %>%
+  .[EstimatedResidentPopulation > 1000] %>%
+  .[, Index := EstimatedResidentPopulation / first(EstimatedResidentPopulation),
+    keyby = "NAME_2011"] %>%
+  # Some SA2s have zero population.
+  .[!is.nan(Index)] %>%
+  .[, .(Year, Index, NAME_2011, distance_group)] %>%
+  grplot(aes(x = Year, y = Index, group = NAME_2011, color = distance_group)) + 
+  geom_line() +
+  geom_smooth(aes(group = distance_group)) +
+  facet_wrap(~distance_group)
+```
+
+```{r pal_v}
+#' @return Viridis palette of x by quantile (decile by default).
+palette_v <- function(x, n = 10) {
+  input <- data.table(x = x)
+  input[, order := 1:.N]
+  input[, decile := ntile(x, n)]
+  
+  colortbl <- data.table(decile = 1:10,
+                         colour = viridis(10))
+  
+  colortbl[input, on = "decile"] %>%
+    setorder(order) %>%
+    .[["colour"]]
+}
+
+pal_v <- colorNumeric(palette = viridis(10),
+                      domain = NULL)
+```
+
+```{r gpal_v}
+gpal_v <- colorNumeric(palette = c("white", gpal(7, reverse = TRUE)),
+                      domain = NULL)
+```
+
+```{r slope_by_SA2}
+slope_by_SA2 <- 
+  ERP_by_ASGS_1991_2016 %>%
+  .[Year > 2005] %>%
+  .[NAME_2011 %ein% SA2011_decoder[GCC_NAME11 == "Greater Sydney"][["SA2_NAME11"]]] %>%
+  .[SA2_2011_weighted_centroids, on = "CODE_2011==SA2_MAIN11", nomatch=0L] %>%
+  .[, distance2GPO := haversine_distance(lat, lon, SYD$LATITUDE, SYD$LONGITUDE)] %>%
+  .[, .(Slope = slope(Year, EstimatedResidentPopulation)), keyby = "NAME_2011"] %>%
+  .[, fillColor := gpal_v(rank(Slope))] %>%
+  .[, labelTitle := NAME_2011] %>%
+  .[, labelText := scales::comma(floor(Slope))] %>%
+  .[, SA2_NAME11 := NAME_2011] %>%
+  set_cols_first("SA2_NAME11") %>%
+  .[]
+```
+
+```{r slope-by-SA2}
+grattan_leaflet(slope_by_SA2, "2011", simple = TRUE)
+```
+
+```{r pop_density_by_SA2_by_Year}
+density_by_SA2_by_Year <-
+  as.data.table(SA2_2011) %>%
+  .[ERP_by_ASGS_1991_2016, on = "SA2_NAME11==NAME_2011", nomatch=0L] %>%
+  .[SA2_NAME11 %ein% SA2011_decoder[GCC_NAME11 == "Greater Sydney"][["SA2_NAME11"]]] %>%
+  .[, pop_density := EstimatedResidentPopulation / (ALBERS_SQM / 1e6)] %>%
+  .[]
+```
+
+```{r pop_density_by_SA3_by_Year}
+density_by_SA3_by_Year <-
+  as.data.table(SA3_2011) %>%
+  .[ERP_by_ASGS_1991_2016, on = "SA3_NAME11==NAME_2011", nomatch=0L] %>%
+  .[SA3_NAME11 %ein% SA2011_decoder[GCC_NAME11 == "Greater Sydney"][["SA3_NAME11"]]] %>%
+  .[, pop_density := EstimatedResidentPopulation / (ALBERS_SQM / 1e6)] %>%
+  .[]
+```
+
+```{r slopeDensity_by_SA2_1991_2016}
+slopeDensity_by_SA2_1991_2016 <-
+  density_by_SA2_by_Year %>%
+  .[, .(Slope_density = slope(Year, pop_density)), keyby = "SA2_NAME11"] %>%
+  .[, Slope_density := round(Slope_density)] %>%
+  .[, fillColor := gpal_v(rank(Slope_density))] %>%
+  .[Slope_density <= 0, fillColor := "white"] %>%
+  .[, labelTitle := SA2_NAME11] %>%
+  .[, labelText := paste(scales::comma(floor(Slope_density)),
+                         "persons per sqkm per year")] %>%
+  .[]
+  
+
+```
+
+```{r density-increase-1991-2016}
+grattan_leaflet(slopeDensity_by_SA2_1991_2016, Year = "2016", simple = TRUE)
+```
+
+
+```{r slopeDensity_by_SA3_1991_2016}
+slopeDensity_by_SA3_1991_2016 <-
+  density_by_SA3_by_Year %>%
+  .[, .(Slope_density = slope(Year, pop_density)), keyby = "SA3_NAME11"] %>%
+  .[, Slope_density := round(Slope_density)] %>%
+  .[, fillColor := gpal_v(Slope_density)] %>%
+  .[Slope_density <= 0, fillColor := "white"] %>%
+  .[, labelTitle := SA3_NAME11] %>%
+  .[, labelText := paste(scales::comma(floor(Slope_density)),
+                         "persons per sqkm per year")] %>%
+  .[]
+```
+
+```{r density-increase-1991-2016-SA3, fig.cap="Outside the centre of Sydney, density has not grown much"}
+grattan_leaflet(slopeDensity_by_SA3_1991_2016, Year = "2011", simple = TRUE)
+```
+
+```{r SALM}
+SALM <- 
+  if (file.exists("~/data-employment-gov-au/salm_smoothed_sa2_datafile_june_quarter_2017.csv")) {
+    fread("~/data-employment-gov-au/salm_smoothed_sa2_datafile_june_quarter_2017.csv")
+  } else {
+    tryCatch({
+    fread("https://docs.employment.gov.au/system/files/doc/other/salm_smoothed_sa2_datafiles_-_june_quarter_2017.csv") %>%
+      melt.data.table(id.vars = c("Data item",
+                                  "Statistical Area Level 2 (SA2)",
+                                  "SA2 Code"),
+                      variable.factor = FALSE,
+                      variable.name = "Month") %>%
+      .[, Date := as.Date(paste0("01-", Month), format = "%d-%b-%y")] %>%
+      setnames(c("Statistical Area Level 2 (SA2)", "SA2 Code"),
+               c("SA2_NAME16", "SA2_MAIN16")) %>%
+      .[, .(SA2_NAME16, SA2_MAIN16, Date, Item = `Data item`, value)] %T>%
+      fwrite("~/data-employment-gov-au/salm_smoothed_sa2_datafile_june_quarter_2017.csv") %>% 
+      .[]
+    }, error = function(e) {
+    fread("https://github.com/HughParsonage/data-employment-gov-au/raw/101c7dc2f137e31b8f4de5669f8653340784c0f9/salm_smoothed_sa2_datafile_june_quarter_2017.csv")
+    })
+  }
+```
+
+
+```{r slopeDensity_by_SA2_2006_2016}
+slopeDensity_by_SA2_2006_2016 <-
+  density_by_SA2_by_Year %>%
+  .[Year >= 2006] %>%
+  .[, .(Slope_density = slope(Year, pop_density)), keyby = "SA2_NAME11"] %>%
+  .[, Slope_density := round(Slope_density)] %>%
+  .[, fillColor := gpal_v(rank(Slope_density))] %>%
+  .[Slope_density <= 0, fillColor := "white"] %>%
+  .[, labelTitle := SA2_NAME11] %>%
+  .[, labelText := paste(scales::comma(floor(Slope_density)), "persons per sqkm per year")] %>%
+  .[]
+  
+
+```
+
+
+
+
+Australia's economic future lies in its cities.
+But city planning is moving jobs and residential areas in different directions.
+The city sprawl is a well-understood phenomenon but what is less well-known is that jobs are becoming more concentrated.
+The modern economy more than ever thrives with a high concentration of people working in the same square kilometre, 
+but the modern planning system limits how close they can live to these hot spots.
+
+In 1991, `r comma(n_employed_persons_1991_SYD_CBD)` worked in the Sydney CBD.
+Twenty years later, `r comma(n_employed_persons_2011_SYD_CBD)` did and in the most recent census, `r comma(n_employed_persons_2016_SYD_CBD)` of the population's main job was located in the 
+`r SA2_2016@data %>% as.data.table %>% .[SA2_NAME16 %pin% "The Rocks$"] %>% .[["AREASQKM16"]] %>% round(1)` km^2.
+at the heart of the city.
+
+```{r SCG_area}
+SCG_area <- 0.0186 # sqkm
+WatsonsBaySlope <-
+  slopeDensity_by_SA2_1991_2016 %>%
+  .[SA2_NAME11 %ein% "Rose Bay - Vaucluse - Watsons Bay"] %>%
+  .[["Slope_density"]]
+```
+
+Over this period, with the exception of the Sydney CBD proper, the population of the inner ring grew modestly.
+The density of the Eastern Suburbs from Rose Bay to Watsons Bay increased by a mere 13 persons per square kilometre per year, the same rate of density increase as one person walking on to the SCG every `r floor(1/(WatsonsBaySlope * SCG_area))` years.
+
+By contrast the density of jobs in the Sydney Inner City SA3 increased by `r round(workers_by_Sydney_SA3_Year %$% {(last(workers) - first(workers))  / AREA[1] / 25})` workers per square kilometre per year and the Sydney CBD proper by 1600 per square kilometre per year, or 181,000 in 25 years. 
+
+```{r n_jobs_SYD_2016}
+n_jobs_SYD_2016 <-
+  JTW_2016_SA2 %>%
+  .[SA2016_decoder, on = "D_SA2_NAME16==SA2_NAME16"] %>%
+  .[, .(workers = sum(workers, na.rm = TRUE)), keyby = "GCC_NAME16"] %>%
+  .[GCC_NAME16 == "Greater Sydney"] %>%
+  .[["workers"]]
+```
+
+The Greater Metropolitan region of Sydney had 1.38~million jobs.
+This increased to `r comma(n_jobs_SYD_2016)`. 
+
+
 
 
 
