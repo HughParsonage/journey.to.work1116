@@ -32,7 +32,7 @@ if (!AND(requireNamespace("grattanCharts", quietly = TRUE),
   install.packages("Census2016.DataPack",
                    repos = "https://hughparsonage.github.io/drat",
                    type = "source",
-                   lib.loc = tempLib)
+                   lib = tempLib)
   library(grattanCharts, lib.loc = tempLib)
   library(Census2016.DataPack, lib.loc = tempLib)
 } else {
