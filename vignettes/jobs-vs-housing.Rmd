@@ -23,6 +23,8 @@ knitr::opts_chunk$set(
 library(viridis)
 library(leaflet)
 library(scales)
+library(data.table)
+library(hutils)
 if (!AND(requireNamespace("grattanCharts", quietly = TRUE),
          requireNamespace("Census2016.DataPack", quietly = TRUE))) {
   tempLib <- tempdir()
@@ -37,8 +39,6 @@ if (!AND(requireNamespace("grattanCharts", quietly = TRUE),
   library(grattanCharts)
   library(Census2016.DataPack)
 }
-library(data.table)
-library(hutils)
 library(magrittr)
 library(ASGS)
 library(sp)
