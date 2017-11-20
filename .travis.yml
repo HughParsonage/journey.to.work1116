@@ -3,3 +3,7 @@
 language: R
 sudo: false
 cache: packages
+
+script:
+- travis_wait 30 mvn R CMD build .
+- R CMD check *tar.gz
