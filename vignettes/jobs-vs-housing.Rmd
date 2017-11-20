@@ -23,8 +23,20 @@ knitr::opts_chunk$set(
 library(viridis)
 library(leaflet)
 library(scales)
-library(grattanCharts)
-library(Census2016.DataPack)
+if (!AND(requireNamespace("grattanCharts", quietly = TRUE),
+         requireNamespace("Census2016.DataPack", quietly = TRUE))) {
+  tempLib <- tempdir()
+  devtools::install_github("hughparsonage/grattanCharts", lib.loc = tempLib)
+  install.packages("Census2016.DataPack",
+                   repos = "https://hughparsonage.github.io/drat",
+                   type = "source",
+                   lib.loc = tempLib)
+  library(grattanCharts, lib.loc = tempLib)
+  library(Census2016.DataPack, lib.loc = tempLib)
+} else {
+  library(grattanCharts)
+  library(Census2016.DataPack)
+}
 library(data.table)
 library(hutils)
 library(magrittr)
