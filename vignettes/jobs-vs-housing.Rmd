@@ -27,7 +27,7 @@ library(data.table)
 library(hutils)
 if (!AND(requireNamespace("grattanCharts", quietly = TRUE),
          requireNamespace("Census2016.DataPack", quietly = TRUE))) {
-  tempLib <- tempdir()
+  tempLib <- .libPaths()[1]
   devtools::install_github("hughparsonage/grattanCharts", lib.loc = tempLib)
   install.packages("Census2016.DataPack",
                    repos = "https://hughparsonage.github.io/drat",
